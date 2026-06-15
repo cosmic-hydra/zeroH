@@ -239,23 +239,24 @@ class QueryCache:
         now = time.time()
 
         # Always evict expired entries first
+        expired_key = None
         for key, entry in self._cache.items():
             if entry.is_expired(self.ttl, now):
-                del self._cache[key]
-                return
+                expired_key = key
+                break
+        if expired_key is not None:
+            del self._cache[expired_key]
+            return
 
         # Find entry with lowest combined value (fewest hits = least useful)
-        # Among entries with equal hits, prefer LRU (front of dict)
+        # Among entries with equal hits, the first encountered (front/LRU) wins
         min_key = None
         min_hits = float("inf")
         for key, entry in self._cache.items():
             if entry.hits < min_hits:
                 min_hits = entry.hits
                 min_key = key
-            elif entry.hits == min_hits and min_key is None:
-                min_key = key
 
-        # Fallback: evict the front (LRU) entry
         if min_key is None:
             min_key = next(iter(self._cache))
         del self._cache[min_key]

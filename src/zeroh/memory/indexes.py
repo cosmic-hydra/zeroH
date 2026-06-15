@@ -78,8 +78,11 @@ class InvertedIndex:
             all_terms |= bigrams
 
         self._memory_tokens[memory.id] = frozenset(all_terms)
-        # Store raw token count for BM25 length normalization
-        self._doc_lengths[memory.id] = len(tokens)
+        # Store total token count (before dedup) for BM25 length normalization
+        raw_tokens = tokenize(memory.content, remove_stopwords=True)
+        self._doc_lengths[memory.id] = len([
+            t for t in raw_tokens if len(t) >= self.min_token_length
+        ])
 
         for token in all_terms:
             self._index[token].add(memory.id)
