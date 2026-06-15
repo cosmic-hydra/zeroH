@@ -51,7 +51,7 @@ from .retrieval import MemoryFilter, Retriever
 # plug-in (`ZeroHPlugin`) is the primary, recommended interface.
 from .agent import GroundedAgent
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # primary plug-in API

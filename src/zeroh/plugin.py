@@ -39,6 +39,7 @@ from .llm import LLM
 from .memory import ConversationMemory, MemoryStore, chunk_text
 from .models import Answer, Citation, Memory, RetrievalResult
 from .retrieval import MemoryFilter, Retriever
+from .text import estimate_tokens
 
 ABSTAIN_MESSAGE = (
     "I don't have enough grounded information in my memory to answer that "
@@ -49,7 +50,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a careful assistant. Answer ONLY using the facts in the provided "
     "context. If the context does not contain the answer, reply exactly with "
     "'I don't know.' Do not use outside knowledge. Do not speculate. Prefer "
-    "short, factual sentences so each statement can be verified."
+    "short, factual sentences so each statement can be verified independently."
 )
 
 # Observability callback: receives an event name and a payload dict.
@@ -84,6 +85,15 @@ class ZeroHPlugin:
             to create a default 8-turn buffer.
         on_event: Optional observability hook called at each pipeline stage with
             ``(event_name, payload)``. Exceptions raised by the hook are ignored.
+        max_context_tokens: Token budget for context injected into the prompt.
+            When retrieval results exceed this budget, lower-scoring memories
+            are dropped. ``None`` (default) means no budget enforcement.
+        adaptive_top_k: When ``True`` (default ``False``), automatically expands
+            ``top_k`` for broad queries (many content words) and shrinks it for
+            narrow queries, improving both recall and token efficiency.
+        semantic_dedupe: When ``True`` (default ``False``), ingestion and
+            ``remember()`` reject near-duplicate memories automatically,
+            preventing context dilution from paraphrased facts.
     """
 
     def __init__(
@@ -103,6 +113,9 @@ class ZeroHPlugin:
         recency_half_life: Optional[float] = None,
         conversation=None,
         on_event: Optional[EventHook] = None,
+        max_context_tokens: Optional[int] = None,
+        adaptive_top_k: bool = False,
+        semantic_dedupe: bool = False,
     ) -> None:
         self.llm = llm
         self.store = store if store is not None else MemoryStore(":memory:")
@@ -121,6 +134,9 @@ class ZeroHPlugin:
         self.system_prompt = system_prompt
         self.abstain_message = abstain_message
         self.on_event = on_event
+        self.max_context_tokens = max_context_tokens
+        self.adaptive_top_k = adaptive_top_k
+        self.semantic_dedupe = semantic_dedupe
         if isinstance(conversation, ConversationMemory):
             self.conversation = conversation
         elif isinstance(conversation, int):
@@ -140,7 +156,8 @@ class ZeroHPlugin:
     ) -> Memory:
         """Durably store a single fact and refresh the retrieval index."""
         mem = self.store.add_text(
-            content, source=source, confidence=confidence, dedupe=dedupe, **metadata
+            content, source=source, confidence=confidence, dedupe=dedupe,
+            semantic_dedupe=self.semantic_dedupe, **metadata
         )
         self.retriever.reindex()
         self._emit("remember", memory_id=mem.id, content=content, source=source)
@@ -173,7 +190,10 @@ class ZeroHPlugin:
             document, max_chars=max_chars, overlap_sentences=overlap_sentences
         )
         mems = [
-            self.store.add_text(chunk, source=source, dedupe=dedupe, **metadata)
+            self.store.add_text(
+                chunk, source=source, dedupe=dedupe,
+                semantic_dedupe=self.semantic_dedupe, **metadata
+            )
             for chunk in chunks
         ]
         self.retriever.reindex()
@@ -226,6 +246,42 @@ class ZeroHPlugin:
         """Clear the short-term conversation context used by :meth:`chat`."""
         self.conversation.clear()
 
+    def consolidate(
+        self,
+        *,
+        max_age: Optional[float] = None,
+        min_confidence: float = 0.3,
+    ) -> int:
+        """Deactivate stale, low-confidence memories to keep the store lean.
+
+        This is a maintenance operation that reduces noise in retrieval by
+        removing memories that are both old AND low-confidence. It prevents
+        memory bloat from degrading retrieval precision over time.
+
+        Args:
+            max_age: Maximum age in seconds; memories older than this AND below
+                ``min_confidence`` are deactivated. ``None`` uses 30 days.
+            min_confidence: Confidence threshold; only memories below this value
+                are considered for deactivation (regardless of age).
+
+        Returns:
+            Number of memories deactivated.
+        """
+        import time as _time
+
+        if max_age is None:
+            max_age = 30 * 24 * 3600  # 30 days
+        cutoff = _time.time() - max_age
+        count = 0
+        for mem in self.store.all():
+            if mem.confidence < min_confidence and mem.created_at < cutoff:
+                self.store.deactivate(mem.id)
+                count += 1
+        if count:
+            self.retriever.reindex()
+            self._emit("consolidate", deactivated=count)
+        return count
+
     # -- prompt augmentation --------------------------------------------------
     def build_context(
         self,
@@ -235,11 +291,62 @@ class ZeroHPlugin:
         source: Optional[str] = None,
         where: Optional[MemoryFilter] = None,
     ) -> List[RetrievalResult]:
-        """Return the memories (above ``min_context_score``) used as context."""
-        results = self.recall(query, top_k=top_k, source=source, where=where)
+        """Return the memories (above ``min_context_score``) used as context.
+
+        When ``adaptive_top_k`` is enabled, the effective top_k scales with
+        query complexity (more content words → more memories retrieved). Token
+        budgeting (``max_context_tokens``) then trims the bottom of the list to
+        stay within the LLM's context window budget.
+        """
+        k = self._effective_top_k(query) if top_k is None else top_k
+        results = self.recall(query, top_k=k, source=source, where=where)
         context = [r for r in results if r.score >= self.min_context_score]
+
+        # Token budgeting: drop lowest-scoring memories that exceed the budget.
+        if self.max_context_tokens and context:
+            context = self._apply_token_budget(context)
+
         self._emit("retrieve", query=query, context_size=len(context))
         return context
+
+    def _effective_top_k(self, query: str) -> int:
+        """Compute adaptive top_k based on query specificity.
+
+        Narrow queries (few content words) need fewer memories; broad queries
+        benefit from more context. This saves tokens on simple lookups while
+        improving recall on complex questions.
+        """
+        if not self.adaptive_top_k:
+            return self.top_k
+        from .text import tokenize
+        content_words = len(tokenize(query))
+        if content_words <= 2:
+            # Very specific query — fewer memories needed
+            return max(2, self.top_k - 2)
+        elif content_words >= 6:
+            # Broad/complex query — retrieve more for coverage
+            return min(self.top_k + 3, 15)
+        return self.top_k
+
+    def _apply_token_budget(
+        self, context: List[RetrievalResult]
+    ) -> List[RetrievalResult]:
+        """Trim context to fit within ``max_context_tokens``.
+
+        Keeps the highest-scoring memories and drops from the bottom of the
+        ranked list. This is the primary token optimization: it prevents large
+        memory stores from blowing up the prompt size.
+        """
+        budget = self.max_context_tokens
+        total = 0
+        kept: List[RetrievalResult] = []
+        for res in context:
+            tokens = estimate_tokens(res.memory.content)
+            if total + tokens > budget and kept:
+                break
+            total += tokens
+            kept.append(res)
+        return kept
 
     def build_prompt(
         self,
@@ -248,20 +355,28 @@ class ZeroHPlugin:
         *,
         history: Optional[str] = None,
     ) -> str:
-        """Render the retrieval-augmented prompt sent to the LLM."""
+        """Render the retrieval-augmented prompt sent to the LLM.
+
+        The prompt format is optimized for grounding: it numbers each context
+        item (enabling citation), includes relevance scores to signal confidence
+        to the model, and ends with explicit constraints that minimize
+        hallucination by encouraging the model to stick to provided facts.
+        """
         lines: List[str] = []
         if history:
             lines.append("Recent conversation:")
             lines.append(history)
             lines.append("")
-        lines.append("Context:")
+        lines.append("Context (relevance score in brackets):")
         for i, res in enumerate(context, 1):
-            lines.append(f"[{i}] {res.memory.content}")
+            score_pct = int(res.score * 100)
+            lines.append(f"[{i}] ({score_pct}%) {res.memory.content}")
         lines.append("")
         lines.append(f"Question: {query}")
         lines.append(
-            "Answer using only the context above. If it is not answerable from "
-            "the context, say 'I don't know.'"
+            "Answer using only the context above. Cite context numbers in "
+            "brackets like [1]. If no context answers the question, say "
+            "'I don't know.' Do not add information beyond what is stated above."
         )
         return "\n".join(lines)
 

@@ -22,6 +22,15 @@ STOPWORDS = frozenset(
     """.split()
 )
 
+# Common negation words used by the verifier to detect contradictions.
+NEGATION_WORDS = frozenset(
+    """
+    no not never none neither nor nobody nothing nowhere
+    cannot cant won't wouldn't shouldn't couldn't didn't doesn't isn't
+    aren't wasn't weren't hasn't haven't hadn't
+    """.split()
+)
+
 
 def tokenize(text: str, remove_stopwords: bool = True) -> List[str]:
     """Lowercase, split into alphanumeric tokens, optionally drop stopwords."""
@@ -43,3 +52,37 @@ def char_ngrams(text: str, n: int = 3) -> List[str]:
     if len(cleaned) < n:
         return [cleaned] if cleaned else []
     return [cleaned[i : i + n] for i in range(len(cleaned) - n + 1)]
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate the token count of a text using a word/punctuation heuristic.
+
+    This approximates BPE tokenization (roughly 1 token per 4 characters for
+    English) without requiring any external tokenizer library. Conservative
+    estimate ensures we stay within budgets.
+    """
+    if not text:
+        return 0
+    # Rough heuristic: ~4 chars per token for English, rounded up.
+    return max(1, (len(text) + 3) // 4)
+
+
+def has_negation(text: str) -> bool:
+    """Return True if the text contains a negation word."""
+    tokens = set(_WORD_RE.findall(text.lower()))
+    return bool(tokens & NEGATION_WORDS)
+
+
+def semantic_similarity_quick(a: str, b: str) -> float:
+    """Fast token-overlap Jaccard similarity (no embeddings needed).
+
+    Returns a value in [0, 1]. Useful for detecting near-duplicate memories
+    without the overhead of full TF-IDF vectorization.
+    """
+    tokens_a = set(tokenize(a))
+    tokens_b = set(tokenize(b))
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = len(tokens_a & tokens_b)
+    union = len(tokens_a | tokens_b)
+    return intersection / union if union else 0.0
