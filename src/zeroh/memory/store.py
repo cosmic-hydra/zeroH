@@ -142,15 +142,29 @@ class MemoryStore:
         Uses fast Jaccard token overlap (no embedding model needed). This
         catches paraphrased duplicates that exact matching misses, preventing
         near-identical memories from diluting retrieval context.
+
+        Note: performs a linear scan over active memories. For stores with
+        thousands of entries, consider batching ingestion with periodic
+        deduplication rather than checking on every add.
         """
-        from ..text import semantic_similarity_quick
+        from ..text import tokenize
+
+        # Pre-compute the input tokens once to avoid repeated work per row.
+        input_tokens = set(tokenize(content))
+        if not input_tokens:
+            return None
 
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM memories WHERE active = 1"
             ).fetchall()
         for row in rows:
-            if semantic_similarity_quick(content, row["content"]) >= threshold:
+            candidate_tokens = set(tokenize(row["content"]))
+            if not candidate_tokens:
+                continue
+            intersection = len(input_tokens & candidate_tokens)
+            union = len(input_tokens | candidate_tokens)
+            if union and (intersection / union) >= threshold:
                 return _row_to_memory(row)
         return None
 

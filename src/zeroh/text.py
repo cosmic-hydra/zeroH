@@ -23,12 +23,20 @@ STOPWORDS = frozenset(
 )
 
 # Common negation words used by the verifier to detect contradictions.
+# These are the tokens that reliably indicate negation after _WORD_RE
+# tokenization (which strips apostrophes and splits on non-alnum).
 NEGATION_WORDS = frozenset(
     """
-    no not never none neither nor nobody nothing nowhere
-    cannot cant won't wouldn't shouldn't couldn't didn't doesn't isn't
-    aren't wasn't weren't hasn't haven't hadn't
+    no not never none neither nor nobody nothing nowhere cannot
     """.split()
+)
+
+# Regex patterns for contraction-based negation (matches the original text
+# before tokenization strips apostrophes).
+_NEGATION_CONTRACTION_RE = re.compile(
+    r"\b(?:won't|wouldn't|shouldn't|couldn't|didn't|doesn't|isn't|aren't"
+    r"|wasn't|weren't|hasn't|haven't|hadn't|can't)\b",
+    re.IGNORECASE,
 )
 
 
@@ -68,7 +76,11 @@ def estimate_tokens(text: str) -> int:
 
 
 def has_negation(text: str) -> bool:
-    """Return True if the text contains a negation word."""
+    """Return True if the text contains a negation word or contraction."""
+    # Check contractions in the raw text first (preserves apostrophes).
+    if _NEGATION_CONTRACTION_RE.search(text):
+        return True
+    # Fall back to tokenized check for standalone negation words.
     tokens = set(_WORD_RE.findall(text.lower()))
     return bool(tokens & NEGATION_WORDS)
 

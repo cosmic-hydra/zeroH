@@ -37,6 +37,9 @@ def test_has_negation_positive():
     assert has_negation("Paris is not the capital of France.")
     assert has_negation("They never visited the museum.")
     assert has_negation("There is nothing wrong here.")
+    assert has_negation("She won't come.")
+    assert has_negation("It isn't true.")
+    assert has_negation("I can't do that.")
 
 
 def test_has_negation_negative():
