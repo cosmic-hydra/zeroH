@@ -44,6 +44,7 @@ from .hallucination import HallucinationDetector, HallucinationReport
 from .llm import CallableLLM, EchoLLM, LLM, OllamaLLM, OpenAICompatibleLLM, RetryLLM
 from .memory import (
     CompressionReport,
+    ContextPreserver,
     ConversationMemory,
     InvertedIndex,
     MemoryCompressor,
@@ -56,13 +57,14 @@ from .memory import (
 from .models import Answer, Citation, Claim, Memory, RetrievalResult
 from .optimization import BatchProcessor, MemoryMetrics, QueryCache
 from .plugin import ABSTAIN_MESSAGE, ZeroHPlugin
+from .reasoning import EntityExtractor, QueryExpander, RelationExtractor
 from .retrieval import MemoryFilter, Retriever
 
 # `GroundedAgent` remains available as a convenience/no-LLM fallback, but the
 # plug-in (`ZeroHPlugin`) is the primary, recommended interface.
 from .agent import GroundedAgent
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     # primary plug-in API
@@ -85,6 +87,7 @@ __all__ = [
     "MemoryCompressor",
     "CompressionReport",
     "RedundancyGroup",
+    "ContextPreserver",
     "Retriever",
     "MemoryFilter",
     "Verifier",
@@ -94,6 +97,10 @@ __all__ = [
     "QueryCache",
     "BatchProcessor",
     "MemoryMetrics",
+    # reasoning
+    "EntityExtractor",
+    "RelationExtractor",
+    "QueryExpander",
     # data models
     "Memory",
     "Citation",
