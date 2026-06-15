@@ -18,6 +18,14 @@ Beyond single-shot completion the plug-in also offers multi-turn :meth:`chat`,
 which threads a bounded short-term :class:`~zeroh.memory.ConversationMemory`
 through retrieval so follow-up questions stay grounded and in-context.
 
+Context preservation ensures no data is lost between exchanges:
+- Active topics are tracked and used to boost retrieval relevance
+- Resolved entities are preserved for coreference resolution
+- High-confidence facts from previous turns are re-injected as context
+
+Query expansion improves retrieval recall by adding synonyms and related terms
+to the retrieval cue, capturing paraphrases that would otherwise be missed.
+
 Usage::
 
     from zeroh import ZeroHPlugin
@@ -37,8 +45,11 @@ from .grounding import Verifier
 from .hallucination import HallucinationDetector
 from .llm import LLM
 from .memory import ConversationMemory, MemoryStore, chunk_text
+from .memory.context import ContextPreserver
 from .models import Answer, Citation, Memory, RetrievalResult
+from .reasoning import EntityExtractor, QueryExpander, RelationExtractor
 from .retrieval import MemoryFilter, Retriever
+from .text import estimate_tokens, tokenize
 
 ABSTAIN_MESSAGE = (
     "I don't have enough grounded information in my memory to answer that "
@@ -49,7 +60,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a careful assistant. Answer ONLY using the facts in the provided "
     "context. If the context does not contain the answer, reply exactly with "
     "'I don't know.' Do not use outside knowledge. Do not speculate. Prefer "
-    "short, factual sentences so each statement can be verified."
+    "short, factual sentences so each statement can be verified independently."
 )
 
 # Observability callback: receives an event name and a payload dict.
@@ -84,6 +95,20 @@ class ZeroHPlugin:
             to create a default 8-turn buffer.
         on_event: Optional observability hook called at each pipeline stage with
             ``(event_name, payload)``. Exceptions raised by the hook are ignored.
+        max_context_tokens: Token budget for context injected into the prompt.
+            When retrieval results exceed this budget, lower-scoring memories
+            are dropped. ``None`` (default) means no budget enforcement.
+        adaptive_top_k: When ``True`` (default ``False``), automatically expands
+            ``top_k`` for broad queries (many content words) and shrinks it for
+            narrow queries, improving both recall and token efficiency.
+        semantic_dedupe: When ``True`` (default ``False``), ingestion and
+            ``remember()`` reject near-duplicate memories automatically,
+            preventing context dilution from paraphrased facts.
+        enable_context_preservation: When ``True`` (default ``True``), track
+            conversation topics, resolved entities, and key facts across turns
+            to prevent information loss.
+        enable_query_expansion: When ``True`` (default ``True``), expand queries
+            with synonyms and related terms to improve retrieval recall.
     """
 
     def __init__(
@@ -103,6 +128,11 @@ class ZeroHPlugin:
         recency_half_life: Optional[float] = None,
         conversation=None,
         on_event: Optional[EventHook] = None,
+        max_context_tokens: Optional[int] = None,
+        adaptive_top_k: bool = False,
+        semantic_dedupe: bool = False,
+        enable_context_preservation: bool = True,
+        enable_query_expansion: bool = True,
     ) -> None:
         self.llm = llm
         self.store = store if store is not None else MemoryStore(":memory:")
@@ -121,12 +151,27 @@ class ZeroHPlugin:
         self.system_prompt = system_prompt
         self.abstain_message = abstain_message
         self.on_event = on_event
+        self.max_context_tokens = max_context_tokens
+        self.adaptive_top_k = adaptive_top_k
+        self.semantic_dedupe = semantic_dedupe
         if isinstance(conversation, ConversationMemory):
             self.conversation = conversation
         elif isinstance(conversation, int):
             self.conversation = ConversationMemory(max_turns=conversation)
         else:
             self.conversation = ConversationMemory()
+
+        # Context preservation layer
+        self.enable_context_preservation = enable_context_preservation
+        self.context_preserver = ContextPreserver() if enable_context_preservation else None
+
+        # Query expansion
+        self.enable_query_expansion = enable_query_expansion
+        self._query_expander = QueryExpander() if enable_query_expansion else None
+
+        # Entity/relation extraction for reasoning
+        self._entity_extractor = EntityExtractor()
+        self._relation_extractor = RelationExtractor()
 
     # -- memory management ----------------------------------------------------
     def remember(
@@ -140,7 +185,8 @@ class ZeroHPlugin:
     ) -> Memory:
         """Durably store a single fact and refresh the retrieval index."""
         mem = self.store.add_text(
-            content, source=source, confidence=confidence, dedupe=dedupe, **metadata
+            content, source=source, confidence=confidence, dedupe=dedupe,
+            semantic_dedupe=self.semantic_dedupe, **metadata
         )
         self.retriever.reindex()
         self._emit("remember", memory_id=mem.id, content=content, source=source)
@@ -173,7 +219,10 @@ class ZeroHPlugin:
             document, max_chars=max_chars, overlap_sentences=overlap_sentences
         )
         mems = [
-            self.store.add_text(chunk, source=source, dedupe=dedupe, **metadata)
+            self.store.add_text(
+                chunk, source=source, dedupe=dedupe,
+                semantic_dedupe=self.semantic_dedupe, **metadata
+            )
             for chunk in chunks
         ]
         self.retriever.reindex()
@@ -225,6 +274,44 @@ class ZeroHPlugin:
     def reset_conversation(self) -> None:
         """Clear the short-term conversation context used by :meth:`chat`."""
         self.conversation.clear()
+        if self.context_preserver:
+            self.context_preserver.clear()
+
+    def consolidate(
+        self,
+        *,
+        max_age: Optional[float] = None,
+        min_confidence: float = 0.3,
+    ) -> int:
+        """Deactivate stale, low-confidence memories to keep the store lean.
+
+        This is a maintenance operation that reduces noise in retrieval by
+        removing memories that are both old AND low-confidence. It prevents
+        memory bloat from degrading retrieval precision over time.
+
+        Args:
+            max_age: Maximum age in seconds; memories older than this AND below
+                ``min_confidence`` are deactivated. ``None`` uses 30 days.
+            min_confidence: Confidence threshold; only memories below this value
+                are considered for deactivation (regardless of age).
+
+        Returns:
+            Number of memories deactivated.
+        """
+        import time as _time
+
+        if max_age is None:
+            max_age = 30 * 24 * 3600  # 30 days
+        cutoff = _time.time() - max_age
+        count = 0
+        for mem in self.store.all():
+            if mem.confidence < min_confidence and mem.created_at < cutoff:
+                self.store.deactivate(mem.id)
+                count += 1
+        if count:
+            self.retriever.reindex()
+            self._emit("consolidate", deactivated=count)
+        return count
 
     # -- prompt augmentation --------------------------------------------------
     def build_context(
@@ -235,11 +322,73 @@ class ZeroHPlugin:
         source: Optional[str] = None,
         where: Optional[MemoryFilter] = None,
     ) -> List[RetrievalResult]:
-        """Return the memories (above ``min_context_score``) used as context."""
-        results = self.recall(query, top_k=top_k, source=source, where=where)
+        """Return the memories (above ``min_context_score``) used as context.
+
+        When ``adaptive_top_k`` is enabled, the effective top_k scales with
+        query complexity (more content words → more memories retrieved). Token
+        budgeting (``max_context_tokens``) then trims the bottom of the list to
+        stay within the LLM's context window budget.
+
+        Query expansion and context preservation are applied to maximize recall.
+        """
+        k = self._effective_top_k(query) if top_k is None else top_k
+
+        # Expand query for better retrieval recall
+        retrieval_query = query
+        if self.enable_query_expansion and self._query_expander:
+            retrieval_query = self._query_expander.expand(query)
+
+        # Apply context preservation: expand with resolved entities and topics
+        if self.context_preserver:
+            retrieval_query = self.context_preserver.expand_query(retrieval_query)
+
+        results = self.recall(retrieval_query, top_k=k, source=source, where=where)
         context = [r for r in results if r.score >= self.min_context_score]
+
+        # Token budgeting: drop lowest-scoring memories that exceed the budget.
+        if self.max_context_tokens and context:
+            context = self._apply_token_budget(context)
+
         self._emit("retrieve", query=query, context_size=len(context))
         return context
+
+    def _effective_top_k(self, query: str) -> int:
+        """Compute adaptive top_k based on query specificity.
+
+        Narrow queries (few content words) need fewer memories; broad queries
+        benefit from more context. This saves tokens on simple lookups while
+        improving recall on complex questions.
+        """
+        if not self.adaptive_top_k:
+            return self.top_k
+        content_words = len(tokenize(query))
+        if content_words <= 2:
+            # Very specific query — fewer memories needed
+            return max(2, self.top_k - 2)
+        elif content_words >= 6:
+            # Broad/complex query — retrieve more for coverage
+            return min(self.top_k + 3, 15)
+        return self.top_k
+
+    def _apply_token_budget(
+        self, context: List[RetrievalResult]
+    ) -> List[RetrievalResult]:
+        """Trim context to fit within ``max_context_tokens``.
+
+        Keeps the highest-scoring memories and drops from the bottom of the
+        ranked list. This is the primary token optimization: it prevents large
+        memory stores from blowing up the prompt size.
+        """
+        budget = self.max_context_tokens
+        total = 0
+        kept: List[RetrievalResult] = []
+        for res in context:
+            tokens = estimate_tokens(res.memory.content)
+            if total + tokens > budget and kept:
+                break
+            total += tokens
+            kept.append(res)
+        return kept
 
     def build_prompt(
         self,
@@ -248,20 +397,40 @@ class ZeroHPlugin:
         *,
         history: Optional[str] = None,
     ) -> str:
-        """Render the retrieval-augmented prompt sent to the LLM."""
+        """Render the retrieval-augmented prompt sent to the LLM.
+
+        The prompt format is optimized for grounding: it numbers each context
+        item (enabling citation), includes relevance scores to signal confidence
+        to the model, and ends with explicit constraints that minimize
+        hallucination by encouraging the model to stick to provided facts.
+
+        Preserved context from previous turns is included when available to
+        prevent information loss between exchanges.
+        """
         lines: List[str] = []
         if history:
             lines.append("Recent conversation:")
             lines.append(history)
             lines.append("")
-        lines.append("Context:")
+
+        # Include preserved facts from context preserver
+        if self.context_preserver:
+            preserved = self.context_preserver.get_preserved_context(max_tokens=100)
+            if preserved:
+                lines.append("Previously established facts:")
+                lines.append(preserved)
+                lines.append("")
+
+        lines.append("Context (relevance score in brackets):")
         for i, res in enumerate(context, 1):
-            lines.append(f"[{i}] {res.memory.content}")
+            score_pct = int(res.score * 100)
+            lines.append(f"[{i}] ({score_pct}%) {res.memory.content}")
         lines.append("")
         lines.append(f"Question: {query}")
         lines.append(
-            "Answer using only the context above. If it is not answerable from "
-            "the context, say 'I don't know.'"
+            "Answer using only the context above. Cite context numbers in "
+            "brackets like [1]. If no context answers the question, say "
+            "'I don't know.' Do not add information beyond what is stated above."
         )
         return "\n".join(lines)
 
@@ -299,20 +468,44 @@ class ZeroHPlugin:
         context, so terse follow-ups ("and its population?") stay grounded. Every
         answer is still verified claim-by-claim; the plug-in abstains rather than
         fabricate. The exchange is recorded in :attr:`conversation`.
+
+        Context preservation ensures topics, entities, and key facts from
+        previous turns are carried forward to maintain continuity.
         """
         self._require_llm()
+
+        # Advance context preserver turn counter
+        if self.context_preserver:
+            self.context_preserver.advance_turn()
+
         # Capture the transcript of *prior* turns before recording this message,
         # so the prompt's conversation history doesn't duplicate the question.
         history = self.conversation.transcript(n=4) or None
         self.conversation.add_user(message)
+
+        # Extract entities from user message for context preservation
+        if self.context_preserver:
+            self._extract_and_preserve_entities(message)
+
         # Blend recent user turns into the retrieval cue for follow-up continuity,
         # but keep the actual question (and the prompt) focused on this message.
         cue = self.conversation.query_context(n=3) or message
         context = self.build_context(cue, top_k=top_k, source=source, where=where)
+
         if not context:
             answer = self._abstain()
         else:
+            # Preserve high-confidence context facts for future turns
+            if self.context_preserver:
+                for res in context[:3]:
+                    if res.score >= 0.5:
+                        self.context_preserver.preserve_fact(
+                            content=res.memory.content,
+                            memory_id=res.memory.id,
+                            confidence=res.score,
+                        )
             answer = self._generate(message, context, history=history)
+
         self.conversation.add_assistant(answer.text)
         return answer
 
@@ -405,6 +598,16 @@ class ZeroHPlugin:
                 "No LLM configured. Pass an `llm` to ZeroHPlugin, or use "
                 "answer_from_memory()/verify() for LLM-free operation."
             )
+
+    def _extract_and_preserve_entities(self, text: str) -> None:
+        """Extract entities from text and register as topics/entities."""
+        entities = self._entity_extractor.extract(text)
+        for entity in entities:
+            if entity.entity_type == "proper_noun":
+                self.context_preserver.add_topic(
+                    entity.text,
+                    keywords=set(tokenize(entity.text, remove_stopwords=False)),
+                )
 
     def _answer_from_report(
         self, report, *, retries: int = 0, raw_draft: Optional[str] = None

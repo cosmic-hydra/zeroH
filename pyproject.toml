@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeroh"
-version = "0.3.0"
+version = "0.6.0"
 description = "Zero Hallucination for AI agents: a durable, grounded memory layer that reduces hallucination and data loss."
 readme = "README.md"
 requires-python = ">=3.9"

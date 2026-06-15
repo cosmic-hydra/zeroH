@@ -89,6 +89,8 @@ class MemoryStore:
         confidence: float = 1.0,
         *,
         dedupe: bool = False,
+        semantic_dedupe: bool = False,
+        similarity_threshold: float = 0.85,
         **metadata,
     ) -> Memory:
         """Convenience helper to create and store a memory from raw text.
@@ -98,9 +100,20 @@ class MemoryStore:
                 already exists it is returned unchanged instead of inserting a
                 duplicate. Keeps the store (and retrieval) free of redundant
                 near-identical facts.
+            semantic_dedupe: When ``True``, also rejects memories that are
+                semantically near-duplicates (Jaccard token overlap above
+                ``similarity_threshold``). This prevents context dilution from
+                paraphrased duplicates, which waste LLM tokens and weaken
+                retrieval precision.
+            similarity_threshold: Jaccard similarity threshold for semantic
+                deduplication (only used when ``semantic_dedupe=True``).
         """
         if dedupe:
             existing = self.find_by_content(content)
+            if existing is not None:
+                return existing
+        if semantic_dedupe:
+            existing = self.find_similar(content, threshold=similarity_threshold)
             if existing is not None:
                 return existing
         mem = Memory(
@@ -120,6 +133,40 @@ class MemoryStore:
                 (content,),
             ).fetchone()
         return _row_to_memory(row) if row else None
+
+    def find_similar(
+        self, content: str, threshold: float = 0.85
+    ) -> Optional[Memory]:
+        """Return an active memory semantically similar above ``threshold``.
+
+        Uses fast Jaccard token overlap (no embedding model needed). This
+        catches paraphrased duplicates that exact matching misses, preventing
+        near-identical memories from diluting retrieval context.
+
+        Note: performs a linear scan over active memories. For stores with
+        thousands of entries, consider batching ingestion with periodic
+        deduplication rather than checking on every add.
+        """
+        from ..text import tokenize
+
+        # Pre-compute the input tokens once to avoid repeated work per row.
+        input_tokens = set(tokenize(content))
+        if not input_tokens:
+            return None
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM memories WHERE active = 1"
+            ).fetchall()
+        for row in rows:
+            candidate_tokens = set(tokenize(row["content"]))
+            if not candidate_tokens:
+                continue
+            intersection = len(input_tokens & candidate_tokens)
+            union = len(input_tokens | candidate_tokens)
+            if union and (intersection / union) >= threshold:
+                return _row_to_memory(row)
+        return None
 
     def supersede(self, old_id: str, new_memory: Memory) -> Memory:
         """Replace a memory with a corrected version without losing history.

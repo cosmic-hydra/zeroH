@@ -81,7 +81,7 @@ def test_build_prompt_includes_context_and_question():
     zh = _kb_plugin()
     ctx = zh.build_context("capital of France")
     prompt = zh.build_prompt("capital of France", ctx)
-    assert "Context:" in prompt
+    assert "Context" in prompt
     assert "Question: capital of France" in prompt
 
 

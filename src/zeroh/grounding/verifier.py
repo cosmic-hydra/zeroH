@@ -11,7 +11,7 @@ from typing import List
 
 from ..models import Citation, Claim
 from ..retrieval import Retriever
-from ..text import split_sentences, tokenize
+from ..text import has_negation, split_sentences, tokenize
 
 
 class Verifier:
@@ -24,12 +24,19 @@ class Verifier:
     against a memory saying "Paris" because the salient token ``berlin`` is not
     covered, even though most other words overlap.
 
+    Additionally, **negation-aware contradiction detection** penalizes claims
+    whose negation polarity differs from the best-matching memory. If a claim
+    says "X is not Y" but the memory says "X is Y" (or vice versa), the support
+    score is reduced, catching subtle contradictions that pure coverage misses.
+
     Args:
         retriever: Retriever over the agent's memory store.
         support_threshold: Minimum coverage in [0, 1] (fraction of the claim's
             content words found in a single supporting memory) for the claim to
             be considered grounded.
         top_k: Number of candidate memories to consider per claim.
+        negation_penalty: Multiplicative penalty applied when the claim and
+            memory disagree on negation polarity (default 0.5).
     """
 
     def __init__(
@@ -37,10 +44,12 @@ class Verifier:
         retriever: Retriever,
         support_threshold: float = 0.7,
         top_k: int = 3,
+        negation_penalty: float = 0.5,
     ) -> None:
         self.retriever = retriever
         self.support_threshold = support_threshold
         self.top_k = top_k
+        self.negation_penalty = negation_penalty
 
     def verify_statement(self, statement: str) -> Claim:
         """Verify a single statement against memory, returning a scored claim."""
@@ -50,6 +59,7 @@ class Verifier:
         if not results or not stmt_tokens:
             return claim
 
+        claim_negated = has_negation(statement)
         best_score = 0.0
         for res in results:
             # Coverage is the fraction of the claim's content words contained in
@@ -60,6 +70,14 @@ class Verifier:
             # as well as high-coverage, so unrelated text can't accidentally
             # "cover" a short claim.
             support = coverage if res.score > 0 else 0.0
+
+            # Negation-aware contradiction detection: if the claim and the
+            # memory have different negation polarities (one negates, the other
+            # doesn't), penalize the support score. This catches cases like
+            # claim="Paris is not the capital" vs memory="Paris is the capital".
+            if support > 0 and claim_negated != has_negation(res.memory.content):
+                support *= self.negation_penalty
+
             best_score = max(best_score, support)
             claim.citations.append(
                 Citation(

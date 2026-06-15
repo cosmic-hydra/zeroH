@@ -42,16 +42,29 @@ A command-line interface is also available::
 from .grounding import Verifier
 from .hallucination import HallucinationDetector, HallucinationReport
 from .llm import CallableLLM, EchoLLM, LLM, OllamaLLM, OpenAICompatibleLLM, RetryLLM
-from .memory import ConversationMemory, MemoryStore, Turn, chunk_text
+from .memory import (
+    CompressionReport,
+    ContextPreserver,
+    ConversationMemory,
+    InvertedIndex,
+    MemoryCompressor,
+    MemoryStore,
+    RedundancyGroup,
+    TieredMemoryManager,
+    Turn,
+    chunk_text,
+)
 from .models import Answer, Citation, Claim, Memory, RetrievalResult
+from .optimization import BatchProcessor, MemoryMetrics, QueryCache
 from .plugin import ABSTAIN_MESSAGE, ZeroHPlugin
+from .reasoning import EntityExtractor, QueryExpander, RelationExtractor
 from .retrieval import MemoryFilter, Retriever
 
 # `GroundedAgent` remains available as a convenience/no-LLM fallback, but the
 # plug-in (`ZeroHPlugin`) is the primary, recommended interface.
 from .agent import GroundedAgent
 
-__version__ = "0.3.0"
+__version__ = "0.6.0"
 
 __all__ = [
     # primary plug-in API
@@ -69,11 +82,25 @@ __all__ = [
     "ConversationMemory",
     "Turn",
     "chunk_text",
+    "TieredMemoryManager",
+    "InvertedIndex",
+    "MemoryCompressor",
+    "CompressionReport",
+    "RedundancyGroup",
+    "ContextPreserver",
     "Retriever",
     "MemoryFilter",
     "Verifier",
     "HallucinationDetector",
     "HallucinationReport",
+    # optimization
+    "QueryCache",
+    "BatchProcessor",
+    "MemoryMetrics",
+    # reasoning
+    "EntityExtractor",
+    "RelationExtractor",
+    "QueryExpander",
     # data models
     "Memory",
     "Citation",
