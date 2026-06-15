@@ -23,6 +23,7 @@ export function activate(context: vscode.ExtensionContext): void {
   register("zeroh.recall", () => recall(bridge));
   register("zeroh.answerFromMemory", () => answerFromMemory(bridge));
   register("zeroh.complete", () => complete(bridge));
+  register("zeroh.memoryStats", () => memoryStats(bridge));
 
   context.subscriptions.push(output);
 }
@@ -169,6 +170,37 @@ async function complete(bridge: ZerohBridge): Promise<void> {
   if (res) {
     showAnswer("Grounded Answer", res.result);
   }
+}
+
+async function memoryStats(bridge: ZerohBridge): Promise<void> {
+  const res = await run("zeroH: gathering memory stats…", () =>
+    bridge.call("stats")
+  );
+  if (!res) {
+    return;
+  }
+  const stats = res.result as {
+    active: number;
+    inactive: number;
+    total: number;
+    by_source: Record<string, number>;
+  };
+  output.show(true);
+  output.appendLine("");
+  output.appendLine("=== zeroH · Memory Stats ===");
+  output.appendLine(
+    `active=${stats.active} · inactive=${stats.inactive} · total=${stats.total}`
+  );
+  const sources = Object.entries(stats.by_source || {});
+  if (sources.length > 0) {
+    output.appendLine("by source:");
+    for (const [source, count] of sources) {
+      output.appendLine(`  - ${source}: ${count}`);
+    }
+  }
+  vscode.window.showInformationMessage(
+    `zeroH: ${stats.active} active / ${stats.total} total memories — see output panel.`
+  );
 }
 
 /** Render an Answer payload to the output channel. */

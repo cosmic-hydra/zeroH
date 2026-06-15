@@ -1,4 +1,4 @@
 """Retrieval components for zeroH."""
-from .retriever import Retriever
+from .retriever import MemoryFilter, Retriever
 
-__all__ = ["Retriever"]
+__all__ = ["Retriever", "MemoryFilter"]

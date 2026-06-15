@@ -2,6 +2,12 @@
 
 All notable changes to the **zeroH** VS Code extension are documented here.
 
+## [0.3.0] - 2026-06-15
+
+### Added
+- New **Memory Stats** command showing active/inactive counts and per-source
+  totals for the durable store.
+
 ## [0.2.0] - 2026-06-15
 
 ### Added
