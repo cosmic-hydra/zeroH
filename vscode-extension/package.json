@@ -1,0 +1,143 @@
+{
+  "name": "zeroh",
+  "displayName": "zeroH — Zero Hallucination Memory",
+  "description": "Grounded, durable memory for your editor. Remember facts, ingest documents, fact-check (verify) text against memory, and get cited, abstaining answers — powered by the zeroH Python plug-in.",
+  "version": "0.2.0",
+  "publisher": "cosmic-hydra",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "memory",
+    "rag",
+    "hallucination",
+    "grounding",
+    "llm"
+  ],
+  "homepage": "https://github.com/cosmic-hydra/zeroH",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cosmic-hydra/zeroH.git",
+    "directory": "vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/cosmic-hydra/zeroH/issues"
+  },
+  "galleryBanner": {
+    "color": "#0b1021",
+    "theme": "dark"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "zeroh.remember",
+        "title": "zeroH: Remember a Fact",
+        "category": "zeroH"
+      },
+      {
+        "command": "zeroh.ingestActiveFile",
+        "title": "zeroH: Ingest Active File",
+        "category": "zeroH"
+      },
+      {
+        "command": "zeroh.verifySelection",
+        "title": "zeroH: Verify Selection Against Memory",
+        "category": "zeroH"
+      },
+      {
+        "command": "zeroh.recall",
+        "title": "zeroH: Recall Memories",
+        "category": "zeroH"
+      },
+      {
+        "command": "zeroh.answerFromMemory",
+        "title": "zeroH: Answer From Memory (no LLM)",
+        "category": "zeroH"
+      },
+      {
+        "command": "zeroh.complete",
+        "title": "zeroH: Ask (grounded completion via your LLM)",
+        "category": "zeroH"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "zeroh.verifySelection",
+          "when": "editorHasSelection",
+          "group": "zeroh@1"
+        },
+        {
+          "command": "zeroh.ingestActiveFile",
+          "when": "editorTextFocus",
+          "group": "zeroh@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "zeroH",
+      "properties": {
+        "zeroh.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to the Python interpreter that has the 'zeroh' package installed."
+        },
+        "zeroh.databasePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the durable SQLite memory store. Leave empty to use a per-workspace store in the extension's global storage."
+        },
+        "zeroh.topK": {
+          "type": "number",
+          "default": 5,
+          "description": "Number of memories to retrieve as context per query."
+        },
+        "zeroh.llm.provider": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "ollama"
+          ],
+          "default": "openai",
+          "description": "LLM provider used by the grounded 'Ask' command. 'openai' targets any OpenAI-compatible endpoint (cloud or local)."
+        },
+        "zeroh.llm.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Model name passed to the configured LLM provider."
+        },
+        "zeroh.llm.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional base URL for the LLM endpoint (e.g. http://localhost:11434/v1 for a local server)."
+        },
+        "zeroh.llm.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the LLM provider. For OpenAI-compatible cloud endpoints. Stored in your settings; prefer a local model if you would rather not store a key."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
+  }
+}
