@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeroh"
+version = "0.1.0"
+description = "Zero Hallucination for AI agents: a durable, grounded memory layer that reduces hallucination and data loss."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "cosmic-hydra" }]
+keywords = ["ai", "agents", "memory", "rag", "hallucination", "grounding", "retrieval"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# The core of zeroH intentionally depends only on the Python standard library so
+# it runs anywhere with no network access and no heavyweight ML dependencies.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/cosmic-hydra/zeroH"
+Repository = "https://github.com/cosmic-hydra/zeroH"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

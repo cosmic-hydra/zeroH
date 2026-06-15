@@ -1,0 +1,21 @@
+# Byte-compiled / optimized / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local SQLite databases produced by examples
+*.db
+*.db-wal
+*.db-shm
+
+# Virtual environments
+.venv/
+venv/
