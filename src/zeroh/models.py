@@ -96,6 +96,13 @@ class Answer:
     `confidence` reflects how well the answer is grounded in stored memory.
     When `grounded` is False, the agent abstained rather than risk a
     hallucination.
+
+    Attributes:
+        retries: How many corrective re-asks the plug-in issued to the LLM
+            before settling on this answer (``0`` when the first draft passed,
+            or for LLM-free paths).
+        raw_draft: The model's *unfiltered* final draft, retained for
+            observability/debugging. ``None`` for LLM-free answers.
     """
 
     text: str
@@ -104,6 +111,8 @@ class Answer:
     claims: List[Claim] = field(default_factory=list)
     citations: List[Citation] = field(default_factory=list)
     abstained: bool = False
+    retries: int = 0
+    raw_draft: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -111,6 +120,8 @@ class Answer:
             "grounded": self.grounded,
             "confidence": self.confidence,
             "abstained": self.abstained,
+            "retries": self.retries,
+            "raw_draft": self.raw_draft,
             "claims": [c.to_dict() for c in self.claims],
             "citations": [c.to_dict() for c in self.citations],
         }

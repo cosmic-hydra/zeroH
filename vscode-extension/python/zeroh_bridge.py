@@ -10,7 +10,7 @@ Request shape::
 
     {
       "command": "remember" | "ingest" | "recall" | "verify"
-                 | "answer" | "complete" | "ping",
+                 | "answer" | "complete" | "stats" | "ping",
       "db": "/abs/path/to/memory.db",   # durable SQLite store (optional)
       ...command-specific fields...,
       "llm": {                          # only used by "complete"
@@ -116,6 +116,10 @@ def handle(req: Dict[str, Any]) -> Dict[str, Any]:
                 ]
             },
         }
+
+    if command == "stats":
+        zh = _plugin(req)
+        return {"ok": True, "result": zh.stats()}
 
     if command == "verify":
         candidate = (req.get("text") or "").strip()

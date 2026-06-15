@@ -17,6 +17,7 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from typing import Iterator, List, Optional
 
 from ..models import Memory
@@ -86,9 +87,22 @@ class MemoryStore:
         content: str,
         source: str = "unknown",
         confidence: float = 1.0,
+        *,
+        dedupe: bool = False,
         **metadata,
     ) -> Memory:
-        """Convenience helper to create and store a memory from raw text."""
+        """Convenience helper to create and store a memory from raw text.
+
+        Args:
+            dedupe: When ``True``, if an active memory with identical content
+                already exists it is returned unchanged instead of inserting a
+                duplicate. Keeps the store (and retrieval) free of redundant
+                near-identical facts.
+        """
+        if dedupe:
+            existing = self.find_by_content(content)
+            if existing is not None:
+                return existing
         mem = Memory(
             content=content,
             source=source,
@@ -96,6 +110,16 @@ class MemoryStore:
             metadata=metadata,
         )
         return self.add(mem)
+
+    def find_by_content(self, content: str) -> Optional[Memory]:
+        """Return the oldest active memory whose content matches exactly."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM memories WHERE active = 1 AND content = ? "
+                "ORDER BY created_at ASC LIMIT 1",
+                (content,),
+            ).fetchone()
+        return _row_to_memory(row) if row else None
 
     def supersede(self, old_id: str, new_memory: Memory) -> Memory:
         """Replace a memory with a corrected version without losing history.
@@ -149,6 +173,100 @@ class MemoryStore:
             rows = self._conn.execute(query).fetchall()
         return [_row_to_memory(r) for r in rows]
 
+    def by_source(self, source: str, include_inactive: bool = False) -> List[Memory]:
+        """Return memories originating from a given ``source``."""
+        query = "SELECT * FROM memories WHERE source = ?"
+        if not include_inactive:
+            query += " AND active = 1"
+        query += " ORDER BY created_at ASC"
+        with self._lock:
+            rows = self._conn.execute(query, (source,)).fetchall()
+        return [_row_to_memory(r) for r in rows]
+
+    def sources(self) -> List[str]:
+        """Distinct sources currently represented among active memories."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT source FROM memories WHERE active = 1 "
+                "ORDER BY source ASC"
+            ).fetchall()
+        return [r["source"] for r in rows]
+
+    def stats(self) -> dict:
+        """Summarize the store: active/inactive counts and per-source totals."""
+        with self._lock:
+            total = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM memories"
+            ).fetchone()["c"]
+            rows = self._conn.execute(
+                "SELECT source, COUNT(*) AS c FROM memories WHERE active = 1 "
+                "GROUP BY source ORDER BY c DESC"
+            ).fetchall()
+        by_source = {r["source"]: int(r["c"]) for r in rows}
+        # The active count is exactly the sum of the per-source group counts.
+        active = sum(by_source.values())
+        return {
+            "active": active,
+            "inactive": int(total) - active,
+            "total": int(total),
+            "by_source": by_source,
+        }
+
+    def export_jsonl(self, include_inactive: bool = False) -> str:
+        """Serialize memories as newline-delimited JSON (one memory per line).
+
+        A portable, human-readable backup format that round-trips through
+        :meth:`import_jsonl`. Unlike :meth:`~zeroh.models.Memory.to_dict`, the
+        export preserves each memory's ``active`` and ``supersedes`` state, so a
+        full backup (``include_inactive=True``) restores the append-only audit
+        trail faithfully rather than reviving tombstoned memories as active.
+        """
+        query = "SELECT * FROM memories"
+        if not include_inactive:
+            query += " WHERE active = 1"
+        query += " ORDER BY created_at ASC"
+        with self._lock:
+            rows = self._conn.execute(query).fetchall()
+        lines = [json.dumps(_row_to_export_dict(r), sort_keys=True) for r in rows]
+        return "\n".join(lines)
+
+    def import_jsonl(self, data: str) -> int:
+        """Load memories from JSONL produced by :meth:`export_jsonl`.
+
+        Returns the number of memories imported. Each record's ``active`` and
+        ``supersedes`` state is restored as-stored (defaulting to an active,
+        non-superseding memory when absent, so plain ``Memory.to_dict`` JSONL also
+        loads). Existing ids are preserved, so re-importing is idempotent.
+        """
+        count = 0
+        for line in data.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            self._restore(json.loads(line))
+            count += 1
+        return count
+
+    def _restore(self, record: dict) -> None:
+        """Insert a memory from an exported record, preserving lifecycle state."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO memories "
+                "(id, content, source, metadata, created_at, confidence, active, supersedes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.get("id") or uuid.uuid4().hex,
+                    record["content"],
+                    record.get("source", "unknown"),
+                    json.dumps(record.get("metadata", {}) or {}),
+                    record.get("created_at", time.time()),
+                    float(record.get("confidence", 1.0)),
+                    int(record.get("active", 1)),
+                    record.get("supersedes"),
+                ),
+            )
+            self._conn.commit()
+
     def __iter__(self) -> Iterator[Memory]:
         return iter(self.all())
 
@@ -179,3 +297,17 @@ def _row_to_memory(row: sqlite3.Row) -> Memory:
         created_at=row["created_at"],
         confidence=row["confidence"],
     )
+
+
+def _row_to_export_dict(row: sqlite3.Row) -> dict:
+    """Serialize a full memory row, including its ``active``/``supersedes`` state."""
+    return {
+        "id": row["id"],
+        "content": row["content"],
+        "source": row["source"],
+        "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+        "created_at": row["created_at"],
+        "confidence": row["confidence"],
+        "active": row["active"],
+        "supersedes": row["supersedes"],
+    }

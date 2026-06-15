@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeroh"
-version = "0.2.0"
+version = "0.3.0"
 description = "Zero Hallucination for AI agents: a durable, grounded memory layer that reduces hallucination and data loss."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -25,12 +25,18 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
+[project.scripts]
+zeroh = "zeroh.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/cosmic-hydra/zeroH"
 Repository = "https://github.com/cosmic-hydra/zeroH"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+zeroh = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

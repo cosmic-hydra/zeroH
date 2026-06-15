@@ -8,6 +8,8 @@ a local model) and zeroH wraps it with a durable, grounded memory layer that:
 * **Grounds** each answer in stored memory with explicit citations.
 * **Verifies** the model's output claim-by-claim and **abstains** instead of
   hallucinating — driving the residual hallucination rate toward near-zero.
+* **Remembers the conversation** too: a bounded short-term memory keeps
+  multi-turn :meth:`~zeroh.plugin.ZeroHPlugin.chat` grounded and in-context.
 
 Quick start (bring your own LLM)::
 
@@ -31,20 +33,25 @@ LLM-free guardrail mode (verify text from any source)::
     zh = ZeroHPlugin()                       # no LLM needed
     zh.remember("The capital of France is Paris.")
     print(zh.verify("The capital of France is Berlin.").abstained)  # True
+
+A command-line interface is also available::
+
+    zeroh remember "The capital of France is Paris." --source kb
+    zeroh ask "What is the capital of France?"
 """
 from .grounding import Verifier
 from .hallucination import HallucinationDetector, HallucinationReport
-from .llm import CallableLLM, EchoLLM, LLM, OllamaLLM, OpenAICompatibleLLM
-from .memory import MemoryStore, chunk_text
+from .llm import CallableLLM, EchoLLM, LLM, OllamaLLM, OpenAICompatibleLLM, RetryLLM
+from .memory import ConversationMemory, MemoryStore, Turn, chunk_text
 from .models import Answer, Citation, Claim, Memory, RetrievalResult
 from .plugin import ABSTAIN_MESSAGE, ZeroHPlugin
-from .retrieval import Retriever
+from .retrieval import MemoryFilter, Retriever
 
 # `GroundedAgent` remains available as a convenience/no-LLM fallback, but the
 # plug-in (`ZeroHPlugin`) is the primary, recommended interface.
 from .agent import GroundedAgent
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # primary plug-in API
@@ -56,10 +63,14 @@ __all__ = [
     "OpenAICompatibleLLM",
     "OllamaLLM",
     "EchoLLM",
+    "RetryLLM",
     # memory + components
     "MemoryStore",
+    "ConversationMemory",
+    "Turn",
     "chunk_text",
     "Retriever",
+    "MemoryFilter",
     "Verifier",
     "HallucinationDetector",
     "HallucinationReport",

@@ -89,6 +89,23 @@ print(res.citations)    # sources backing the answer
 print(zh.complete("Who won the 2049 World Cup?").abstained)  # True
 ```
 
+### Multi-turn chat (short-term + long-term memory)
+
+`chat()` adds a bounded **short-term conversation memory** on top of the durable
+store, so terse follow-ups stay grounded and in-context — without ever relaxing
+verification:
+
+```python
+zh.ingest(open("handbook.md").read(), source="handbook")
+
+zh.chat("Tell me about the Eiffel Tower.")
+zh.chat("When was it completed?")   # "it" is resolved from the prior turn
+zh.reset_conversation()             # clear the short-term context when done
+```
+
+The recent user turns are folded into retrieval so the right grounding facts are
+still found; every answer is then verified claim-by-claim exactly as `complete()`.
+
 ### Guardrail mode (no generation)
 
 Already have an answer from somewhere — an LLM you call yourself, a cache, a
@@ -109,33 +126,91 @@ mem = zh.remember("The sky is green.")
 zh.correct(mem.id, "The sky is blue.")    # supersedes; old value kept for audit
 ```
 
+### Tuning memory & retrieval
+
+Retrieval can fold two extra signals into ranking — both **off by default**, so
+existing behaviour is unchanged until you opt in:
+
+```python
+zh = ZeroHPlugin(
+    llm,
+    confidence_weight=0.5,      # trust high-confidence memories more
+    recency_weight=0.5,         # prefer fresher knowledge ...
+    recency_half_life=86_400,   # ... decaying to half-weight after a day
+)
+
+# Scope retrieval to a source, or any metadata predicate:
+zh.complete("refund window?", source="handbook")
+zh.recall("policy", where=lambda m: m.metadata.get("team") == "support")
+
+# Inspect, back up and restore memory:
+zh.stats()                      # {'active': 12, 'inactive': 1, 'by_source': {...}}
+dump = zh.export()              # JSONL backup (round-trips via zh.load(dump))
+zh.forget(mem.id)               # soft-delete (kept for audit, dropped from recall)
+
+# Observe every pipeline stage (retrieve / draft / answer / abstain):
+zh = ZeroHPlugin(llm, on_event=lambda event, data: print(event, data))
+```
+
+Wrap any provider in `RetryLLM` for resilience against flaky networks or rate
+limits:
+
+```python
+from zeroh.llm import RetryLLM, OpenAICompatibleLLM
+llm = RetryLLM(OpenAICompatibleLLM(model="gpt-4o-mini", api_key="sk-..."), max_retries=3)
+```
+
+## Command-line interface
+
+Installing zeroH also provides a `zeroh` command (and `python -m zeroh`) for
+driving a durable store straight from the shell:
+
+```bash
+zeroh remember "The capital of France is Paris." --source kb
+zeroh ingest handbook.md --source handbook          # or: cat doc | zeroh ingest -
+zeroh recall "capital of France"
+zeroh ask "What is the capital of France?"           # extractive, no LLM needed
+zeroh verify "The capital of France is Berlin."      # guardrail fact-check
+zeroh stats
+zeroh export > backup.jsonl                          # zeroh import < backup.jsonl
+```
+
+The store defaults to `$ZEROH_DB` or `./zeroh.db`; pass `--db` to override and
+`--json` to any command for machine-readable output.
+
 ## Public API
 
 | Symbol | Purpose |
 | --- | --- |
-| `ZeroHPlugin` | The plug-in. Wraps your LLM with grounded memory + verification. |
+| `ZeroHPlugin` | The plug-in. Wraps your LLM with grounded memory + verification. Adds `chat()`, `stats()`, `export()`/`load()`, `forget()`. |
 | `zeroh.llm.LLM` | Base interface — implement `complete()` for any model. |
 | `OpenAICompatibleLLM`, `OllamaLLM`, `CallableLLM`, `EchoLLM` | Ready-made providers. |
-| `MemoryStore`, `chunk_text` | Durable storage + document chunking. |
-| `Retriever`, `Verifier`, `HallucinationDetector` | Composable building blocks. |
+| `RetryLLM` | Wrap any provider with exponential-backoff retries. |
+| `MemoryStore`, `chunk_text` | Durable storage (+ `stats`, `export_jsonl`/`import_jsonl`, dedupe) + chunking. |
+| `ConversationMemory` | Bounded short-term memory powering multi-turn `chat()`. |
+| `Retriever`, `Verifier`, `HallucinationDetector` | Composable building blocks (retrieval supports confidence/recency/filters). |
 | `GroundedAgent` | Legacy convenience wrapper (no-LLM extractive answers). |
+| `zeroh` CLI | `remember`, `ingest`, `recall`, `ask`, `verify`, `stats`, `export`/`import`. |
 
 ## Run the demos & tests
 
 ```bash
-python examples/plugin_quickstart.py   # plug-in around your own LLM
-python examples/quickstart.py          # LLM-free memory/guardrail demo
-pytest                                 # full test suite
+python examples/plugin_quickstart.py        # plug-in around your own LLM
+python examples/conversation_quickstart.py  # multi-turn grounded chat
+python examples/quickstart.py               # LLM-free memory/guardrail demo
+zeroh ask "..."                             # the command-line interface
+pytest                                      # full test suite
 ```
 
 ## Project layout
 
 ```
 src/zeroh/
-|- plugin.py            # ZeroHPlugin — the bring-your-own-LLM plug-in
-|- llm/                 # LLM interface + cloud/local providers
-|- memory/              # durable MemoryStore + document ingestion/chunking
-|- retrieval/           # Retriever (RAG)
+|- plugin.py            # ZeroHPlugin — the bring-your-own-LLM plug-in (+ chat)
+|- cli.py / __main__.py # the `zeroh` command-line interface
+|- llm/                 # LLM interface + cloud/local providers + RetryLLM
+|- memory/              # durable MemoryStore + ingestion + ConversationMemory
+|- retrieval/           # Retriever (RAG; confidence/recency/filter aware)
 |- grounding/           # Verifier (claim verification)
 |- hallucination/       # HallucinationDetector + risk report
 |- agent/               # GroundedAgent (legacy convenience)
